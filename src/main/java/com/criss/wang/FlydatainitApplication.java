@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.math.RoundingMode;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.sql.Connection;
@@ -15,9 +16,12 @@ import java.sql.SQLException;
 import org.apache.commons.io.IOUtils;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 
-import com.alibaba.druid.util.StringUtils;
 import com.criss.wang.entity.Geometry;
+
+import net.cc.commons.MathUtils;
+import net.cc.commons.StringUtils;
 import net.cc.luffy.entity.proto.UavFlyDataBatchProto;
 import net.cc.luffy.entity.proto.UavFlyDataProto;
 import com.criss.wang.entity.UavTrack;
@@ -25,10 +29,11 @@ import com.criss.wang.entity.UavTrackProps;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-@SpringBootApplication
+@SpringBootApplication(exclude = { DataSourceAutoConfiguration.class })
 public class FlydatainitApplication {
 
 	private static String dbURL;
+	private static String dbName;
 	private static String userName;
 	private static String userPwd;
 	private static String hbaseUrl;
@@ -45,18 +50,20 @@ public class FlydatainitApplication {
 
 		// office-server:3306
 		dbURL = args[1];
+		// 数据库名称 UCareDB_Test
+		dbName = args[2];
 		// 用户名
-		userName = args[2];
+		userName = args[3];
 		// 密码
-		userPwd = args[3];
+		userPwd = args[4];
 		// 192.168.3.37:8100
-		hbaseUrl = args[4];
+		hbaseUrl = args[5];
 
 		Connection dbConn = null;
 
 		try {
 			Class.forName("com.mysql.jdbc.Driver");
-			dbConn = DriverManager.getConnection("jdbc:mysql://" + dbURL + "/UCareDB_Test?useSSL=false", userName,
+			dbConn = DriverManager.getConnection("jdbc:mysql://" + dbURL + "/" + dbName + "?useSSL=false", userName,
 					userPwd);
 			System.out.println("链接成功");
 
@@ -79,10 +86,10 @@ public class FlydatainitApplication {
 			flyDataRs = flyDataPs.executeQuery();
 			flyDataRs.next();
 			// 总记录数量
-			String count = flyDataRs.getString(1);
+			String rowCount = flyDataRs.getString(1);
 			// 起始行
 			int row = 0;
-			while (row <= Integer.valueOf(count)) {
+			while (row <= Integer.valueOf(rowCount)) {
 				String sql = "SELECT DEVICE_START_END_ID, DEVICE_ID, FLY_DATA FROM FLY_DATA_INFO " + "limit " + row
 						+ ", 10";
 				flyDataPs = dbConn.prepareStatement(sql);
@@ -93,7 +100,13 @@ public class FlydatainitApplication {
 					convertTrack2ProtoBytes(flyDataRs.getString(2), jsonTrack);
 				}
 				row += 10;
+				if (row < Integer.valueOf(rowCount))
+					System.out.println("当前row: " + row + ", rowCount: " + rowCount + ",当前已完成进度： "
+							+ (MathUtils.div(Double.valueOf(row), Double.valueOf(rowCount), 2, RoundingMode.HALF_UP)
+									* 100)
+							+ "%");
 			}
+			System.out.println("当前已完成进度：100%");
 		} catch (Exception e) {
 			e.printStackTrace();
 		} finally {
@@ -103,62 +116,82 @@ public class FlydatainitApplication {
 			if (flyDataPs != null) {
 				flyDataPs = null;
 			}
+
 		}
 	}
 
 	public static void convertTrack2ProtoBytes(String flyId, UavTrack jsonTrack) {
-		try {
-			UavFlyDataBatchProto.UavFlyDataBatch.Builder uavFlyDataBatch = UavFlyDataBatchProto.UavFlyDataBatch
-					.newBuilder();
-			Geometry geo = jsonTrack.getGeometry();
-			UavTrackProps props = jsonTrack.getProperties();
+		UavFlyDataBatchProto.UavFlyDataBatch.Builder uavFlyDataBatch = UavFlyDataBatchProto.UavFlyDataBatch
+				.newBuilder();
+		Geometry geo = jsonTrack.getGeometry();
+		UavTrackProps props = jsonTrack.getProperties();
 
-			for (int i = 0; i < geo.getCoordinates().length; i++) {
-				UavFlyDataProto.UavFlyData.Builder uavFlyData = UavFlyDataProto.UavFlyData.newBuilder();
-				// 设备Id
-				uavFlyData.setFlyId(flyId)
-						// jc102
-						.setLat(geo.getCoordinates()[i][1]) // 纬度
-						.setLon(geo.getCoordinates()[i][0]) // 经度
+		//
+		int sendCount = 1;
 
-						.setSpeed((float) props.getSpeed()[i]) // speed
-						.setDirection((float) props.getDirection()[i]) // direction
-						.setHeight(props.getHeight()[i]) // height
-						.setAlt(props.getAlt()[i]) // alt
-						.setYaw(props.getYaw()[i]) // yaw
-						.setPitch(props.getPitch()[i]) // pitch
-						.setRoll(props.getRoll()[i]) // roll
-						.setTime(props.getTime()[i]); // time
+		for (int i = 0; i < geo.getCoordinates().length; i++) {
+			UavFlyDataProto.UavFlyData.Builder uavFlyData = UavFlyDataProto.UavFlyData.newBuilder();
+			// 设备Id
+			uavFlyData.setFlyId(flyId)
+					// jc102
+					.setLat(geo.getCoordinates()[i][1]) // 纬度
+					.setLon(geo.getCoordinates()[i][0]) // 经度
 
-				// uploadTime
-				if (jsonTrack.getProperties().getUploadingTime() != null
-						&& jsonTrack.getProperties().getUploadingTime().length > 0
-						&& jsonTrack.getProperties().getUploadingTime()[i] > 0) {
-					uavFlyData.setUploadTime(jsonTrack.getProperties().getUploadingTime()[i]);
-				} else {
-					count++;
-					uavFlyData.setUploadTime(props.getTime()[i]);
-				}
+					.setSpeed((float) props.getSpeed()[i]) // speed
+					.setDirection((float) props.getDirection()[i]) // direction
+					.setHeight(props.getHeight()[i]) // height
+					.setAlt(props.getAlt()[i]) // alt
+					.setYaw(props.getYaw()[i]) // yaw
+					.setPitch(props.getPitch()[i]) // pitch
+					.setRoll(props.getRoll()[i]) // roll
+					.setTime(props.getTime()[i] * 1000); // time
 
-				// Ext2
-				if (jsonTrack.getProperties().getExt2() != null && jsonTrack.getProperties().getExt2().length > 0
-						&& !StringUtils.isEmpty(jsonTrack.getProperties().getExt2()[i])) {
-					uavFlyData.setExt2(props.getExt2()[i]);
-				}
+			// uploadTime
+			if (jsonTrack.getProperties().getUploadingTime() != null
+					&& jsonTrack.getProperties().getUploadingTime().length > 0
+					&& jsonTrack.getProperties().getUploadingTime()[i] > 0) {
+				uavFlyData.setUploadTime(jsonTrack.getProperties().getUploadingTime()[i] * 1000);
+			} else {
+				count++;
+				uavFlyData.setUploadTime(props.getTime()[i] * 1000);
+			}
 
-				// oLat
-				if (jsonTrack.getProperties().getOLat() != null && jsonTrack.getProperties().getOLat().length > 0
-						&& jsonTrack.getProperties().getOLat()[i] > 0) {
-					uavFlyData.setOLat(jsonTrack.getProperties().getOLat()[i]);
-				}
-				// oLon
-				if (jsonTrack.getProperties().getOLon() != null && jsonTrack.getProperties().getOLon().length > 0
-						&& jsonTrack.getProperties().getOLon()[i] > 0) {
-					uavFlyData.setOLon(jsonTrack.getProperties().getOLon()[i]);
-				}
+			// Ext2
+			if (jsonTrack.getProperties().getExt2() != null && jsonTrack.getProperties().getExt2().length > 0
+					&& !StringUtils.isEmpty(jsonTrack.getProperties().getExt2()[i])) {
+				uavFlyData.setExt2(props.getExt2()[i]);
+			}
+
+			// oLat
+			if (jsonTrack.getProperties().getOLat() != null && jsonTrack.getProperties().getOLat().length > 0
+					&& jsonTrack.getProperties().getOLat()[i] > 0) {
+				uavFlyData.setOLat(jsonTrack.getProperties().getOLat()[i]);
+			}
+			// oLon
+			if (jsonTrack.getProperties().getOLon() != null && jsonTrack.getProperties().getOLon().length > 0
+					&& jsonTrack.getProperties().getOLon()[i] > 0) {
+				uavFlyData.setOLon(jsonTrack.getProperties().getOLon()[i]);
+			}
+
+			// 如果batch中包含了2000个点，则将这2000个点发出去
+			if (sendCount % 2000 == 0) {
+				sendFlyData(uavFlyDataBatch);
+				uavFlyDataBatch.clear();
+			} else {
 				uavFlyDataBatch.addFlyData(uavFlyData.build());
 			}
 
+			sendCount++;
+		}
+
+		// 如果有剩余数据也需要发出去
+		if (uavFlyDataBatch.build().getFlyDataCount() > 0) {
+			sendFlyData(uavFlyDataBatch);
+		}
+	}
+
+	public static void sendFlyData(UavFlyDataBatchProto.UavFlyDataBatch.Builder uavFlyDataBatch) {
+		try {
 			System.out.println("uploadTime为空数量：" + count);
 			count = 0; // count清零
 
@@ -177,7 +210,8 @@ public class FlydatainitApplication {
 			urlc.connect();
 
 			// 获取一次batch的数据量
-			System.out.println("batch size:" + uavFlyDataBatch.build().toByteArray().length);
+			// System.out.println("batch size:" +
+			// uavFlyDataBatch.build().toByteArray().length);
 
 			try (OutputStream os = urlc.getOutputStream();) {
 				IOUtils.copy(new ByteArrayInputStream(uavFlyDataBatch.build().toByteArray()), os);
@@ -197,8 +231,6 @@ public class FlydatainitApplication {
 		} catch (Exception e) {
 			e.printStackTrace();
 		} finally {
-			// 退出脚本
-			System.exit(-1);
 		}
 	}
 }
